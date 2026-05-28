@@ -1,32 +1,47 @@
 # Bovine IgG Repertoire Analysis Pipeline
 
-A Nextflow pipeline for analyzing bovine immunoglobulin sequences from Oxford Nanopore amplicon data.
+A Nextflow pipeline for analyzing bovine immunoglobulin heavy chain sequences from Oxford Nanopore amplicon data. Supports two input modes:
 
-## Overview
-
-This pipeline processes heavy and light chain IgG amplicons from cow PBMCs, clusters reads into consensus sequences, and optionally annotates them with V/D/J gene assignments and CDR3 extraction.
+- **PCR barcode mode** — single pooled ONT run demultiplexed by plate + well PCR barcodes (up to 11 plates × 96 wells = 1,056 single cells per run)
+- **ONT barcode mode** — standard MinKNOW-demultiplexed barcode directories (original behavior)
 
 ## Requirements
 
 - [Nextflow](https://www.nextflow.io/) (v21.04+)
 - [Docker](https://www.docker.com/) or [Singularity/Apptainer](https://apptainer.org/)
+- [minibar](https://github.com/calacademy-research/minibar) (PCR barcode mode only — must be available inside the container)
 
 ## Quick Start
 
+### PCR barcode mode (single-cell)
+
+Sequence all cells in a single undemultiplexed ONT run and demultiplex by the plate + well PCR barcodes:
+
 ```bash
-nextflow run fruggles11/bovine-igg-pipeline --fastq_dir /path/to/fastq_pass
+nextflow run fruggles11/bovine-igg-pipeline-barcoded \
+  --pooled_fastq /path/to/your_run.fastq.gz
 ```
 
-That's it! The pipeline will automatically detect all barcode directories and classify reads as heavy or light chain based on primer sequences.
+### ONT barcode mode (original)
 
-To use a specific version:
+Reads already demultiplexed by MinKNOW into barcode directories:
+
 ```bash
-nextflow run fruggles11/bovine-igg-pipeline -r main --fastq_dir /path/to/fastq_pass
+nextflow run fruggles11/bovine-igg-pipeline-barcoded \
+  --fastq_dir /path/to/fastq_pass
 ```
 
 ## Input Data
 
-The pipeline expects Oxford Nanopore basecalled FASTQ files organized by barcode:
+### PCR barcode mode
+
+A single gzipped (or uncompressed) FASTQ file from an ONT run with MinKNOW barcoding turned **off**. All 960–1,056 cells are pooled in one file; the pipeline demultiplexes them using the inline plate and well PCR barcodes.
+
+The barcode index (`resources/pcr_barcodes_minibar.tsv`) is pre-populated with the full 11-plate × 96-well set. Each forward primer carries a 24 bp plate barcode and each reverse primer carries a 24 bp well barcode (minimum Levenshtein distance of 8 between any two barcodes).
+
+### ONT barcode mode
+
+Basecalled FASTQ files organized into barcode subdirectories:
 
 ```
 fastq_pass/
@@ -34,102 +49,118 @@ fastq_pass/
 │   ├── file1.fastq.gz
 │   └── file2.fastq.gz
 ├── barcode02/
-│   ├── file1.fastq.gz
-│   └── file2.fastq.gz
-└── barcode03/    # Any number of barcodes supported
+│   └── ...
+└── barcode03/
     └── ...
 ```
 
-**Key features:**
-- All directories matching `barcode*/` are automatically detected
-- Reads are classified as heavy or light chain based on primer sequence matching
-- No need to specify which barcode contains which chain type
-- Unmatched reads (no primer detected) are saved separately for review
+All directories matching `barcode*/` are auto-detected. Reads are classified as heavy or light chain by primer sequence matching.
 
-## Setting Up IgBLAST Annotation (Optional)
+## Pipeline Steps
 
-For V/D/J gene annotation and CDR3 extraction, you need to download bovine germline genes from IMGT:
+### PCR barcode mode
 
-1. Go to [IMGT/GENE-DB](https://www.imgt.org/genedb/)
-2. For each gene type, select:
-   - Species: "Bos taurus"
-   - Group: IGHV, IGHD, IGHJ, IGKV, IGKJ, IGLV, or IGLJ
-   - Functionality: "functional" (recommended)
-3. Click Search, select all genes, and Export as FASTA
-4. Save files in `resources/germlines/`:
-   - `bovine_IGHV.fasta`
-   - `bovine_IGHD.fasta`
-   - `bovine_IGHJ.fasta`
-   - `bovine_IGKV.fasta`
-   - `bovine_IGKJ.fasta`
-   - `bovine_IGLV.fasta`
-   - `bovine_IGLJ.fasta`
+1. **Demultiplex** — minibar splits the pooled FASTQ into per-cell files by plate + well barcode, trimming barcodes from reads
+2. **Quality Filter** — filter by length and quality score
+3. **Trim Adapters** — detect and remove sequencing adapters
+4. **Cluster Reads** — cluster reads into consensus sequences with amplicon_sorter
+5. **Annotate** (optional) — V/D/J gene assignment with IgBLAST
+6. **Report** — summary statistics
 
-If germline files are not available, run with `--skip_annotation true` to skip the annotation step.
+### ONT barcode mode
+
+1. **Merge Reads** — concatenate reads within each barcode directory
+2. **Classify by Primer** — sort reads into heavy/light chain
+3. **Quality Filter** — filter by length and quality score
+4. **Trim Adapters** — detect and remove sequencing adapters
+5. **Cluster Reads** — cluster reads into consensus sequences with amplicon_sorter
+6. **Annotate** (optional) — V/D/J gene assignment with IgBLAST
+7. **Report** — summary statistics
 
 ## Parameters
 
+### PCR barcode mode
+
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `--fastq_dir` | (required) | Path to directory containing barcode subdirectories |
-| `--primer_table` | `resources/bovine_primers.csv` | CSV file with primer sequences for chain classification |
+| `--pooled_fastq` | `""` | Path to pooled undemultiplexed FASTQ; set this to activate PCR barcode mode |
+| `--barcode_index` | `resources/pcr_barcodes_minibar.tsv` | minibar index file (SampleID / Barcode1 / Barcode2) |
+| `--barcode_error` | `2` | Edit distance allowed per barcode during demultiplexing |
+
+### ONT barcode mode
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--fastq_dir` | `""` | Path to directory containing barcode subdirectories |
+| `--primer_table` | `resources/bovine_primers.csv` | CSV with primer sequences for chain classification |
 | `--primer_mismatch` | `2` | Allowed mismatches when matching primers (max 3) |
-| `--min_len` | `400` | Minimum amplicon length |
-| `--max_len` | `800` | Maximum amplicon length |
-| `--min_qual` | `10` | Minimum quality score |
-| `--min_reads` | `100` | Minimum reads per chain per barcode |
-| `--similar_consensus` | `98` | Clustering threshold for merging groups |
-| `--skip_annotation` | `false` | Skip IgBLAST annotation |
+
+### Shared parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--min_len` | `400` | Minimum amplicon length (bp) |
+| `--max_len` | `1000` | Maximum amplicon length (bp) |
+| `--min_qual` | `10` | Minimum Phred quality score |
+| `--min_reads` | `100` | Minimum reads required per cell/barcode |
+| `--similar_genes` | `85` | amplicon_sorter initial grouping threshold (%) |
+| `--similar_species` | `90` | amplicon_sorter sequence addition threshold (%) |
+| `--similar_consensus` | `95` | amplicon_sorter consensus merging threshold (%) |
+| `--length_diff_consensus` | `10` | amplicon_sorter length variance allowance (%) |
+| `--skip_annotation` | `false` | Skip IgBLAST annotation step |
 | `--results` | `./results` | Output directory |
 
 ## Output
 
-Results are organized by barcode:
+### PCR barcode mode
 
 ```
 results/
-├── 1_merged_reads/
-│   └── barcode01/
-│       └── barcode01_merged.fastq.gz
-├── 2_classified_reads/
-│   └── barcode01/
-│       ├── barcode01_heavy.fastq.gz      # Heavy chain reads
-│       ├── barcode01_light.fastq.gz      # Light chain reads
-│       └── barcode01_unmatched.fastq.gz  # Reads without primer match
+├── 0_demuxed_reads/
+│   ├── PB01_A01.fastq.gz    # One file per cell (plate_well)
+│   ├── PB01_B01.fastq.gz
+│   └── ...
 ├── 3_filtered_reads/
-│   └── barcode01/
-│       ├── barcode01_heavy_filtered.fastq.gz
-│       └── barcode01_light_filtered.fastq.gz
 ├── 4_consensus_sequences/
-│   └── barcode01/
-│       ├── barcode01_heavy_consensus/
-│       └── barcode01_light_consensus/
-├── 5_annotations/
-│   └── barcode01/
-│       ├── barcode01_heavy_annotations.tsv
-│       └── barcode01_light_annotations.tsv
+│   └── PB01_A01/
+│       └── PB01_A01_heavy_consensus/
+├── 5_annotations/           # if --skip_annotation false
 └── 6_reports/
     └── summary_stats.tsv
 ```
 
-## Pipeline Steps
+### ONT barcode mode
 
-1. **Merge Reads** - Concatenate reads from each barcode
-2. **Classify by Primer** - Sort reads into heavy/light chain based on primer sequences
-3. **Quality Filter** - Filter by length and quality
-4. **Trim Primers** - Remove primer and adapter sequences
-5. **Cluster Reads** - Cluster similar sequences using amplicon_sorter
-6. **Annotate** (optional) - V/D/J gene assignment with IgBLAST
-7. **Parse CDR3** (optional) - Extract CDR3 sequences
-8. **Report** - Generate summary statistics
+```
+results/
+├── 1_merged_reads/
+├── 2_classified_reads/
+│   └── barcode01/
+│       ├── barcode01_heavy.fastq.gz
+│       ├── barcode01_light.fastq.gz
+│       └── barcode01_unmatched.fastq.gz
+├── 3_filtered_reads/
+├── 4_consensus_sequences/
+├── 5_annotations/           # if --skip_annotation false
+└── 6_reports/
+    └── summary_stats.tsv
+```
+
+## Setting Up IgBLAST Annotation (Optional)
+
+Download bovine germline genes from IMGT and save them in `resources/germlines/`:
+
+1. Go to [IMGT/GENE-DB](https://www.imgt.org/genedb/)
+2. For each segment, select Species: *Bos taurus*, Functionality: functional, and export as FASTA
+3. Save as: `bovine_IGHV.fasta`, `bovine_IGHD.fasta`, `bovine_IGHJ.fasta`, `bovine_IGKV.fasta`, `bovine_IGKJ.fasta`, `bovine_IGLV.fasta`, `bovine_IGLJ.fasta`
+
+Run with `--skip_annotation true` if germline files are not available.
 
 ## Bovine IgG Considerations
 
-This pipeline is specifically tuned for bovine immunoglobulins:
-
-- **Ultralong CDR3H**: Cattle can have CDR3H up to 70+ amino acids (vs ~15 for humans)
+- **Ultralong CDR3H**: Cattle can have CDR3H regions up to 70+ amino acids (vs ~15 for humans)
 - **Limited V gene usage**: Cattle primarily use IGHV1-7 for heavy chains
-- **Clustering parameters**: Tuned to distinguish true variants from ONT sequencing errors
+- **Clustering thresholds**: Tuned for ONT error rates (~5–10%) and bovine IgH length variability
 
 ## License
 
