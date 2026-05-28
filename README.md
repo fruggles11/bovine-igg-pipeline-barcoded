@@ -9,7 +9,25 @@ A Nextflow pipeline for analyzing bovine immunoglobulin heavy chain sequences fr
 
 - [Nextflow](https://www.nextflow.io/) (v21.04+)
 - [Docker](https://www.docker.com/) or [Singularity/Apptainer](https://apptainer.org/)
-- [minibar](https://github.com/calacademy-research/minibar) (PCR barcode mode only — must be available inside the container)
+- [minibar](https://github.com/calacademy-research/minibar) (included in the Docker image)
+
+## Building the Docker Image
+
+The pipeline uses a custom Docker image (`fruggles11/bovine-igg-pipeline-barcoded:latest`) that includes all required tools. Build it on the machine where you run the pipeline (e.g. the Mac Studio):
+
+```bash
+git clone https://github.com/fruggles11/bovine-igg-pipeline-barcoded.git
+cd bovine-igg-pipeline-barcoded
+docker build -t fruggles11/bovine-igg-pipeline-barcoded:latest .
+```
+
+To make the image available on Docker Hub so you don't need to rebuild on every machine:
+
+```bash
+docker push fruggles11/bovine-igg-pipeline-barcoded:latest
+```
+
+You only need to rebuild the image if the `Dockerfile` or `environment.yml` changes.
 
 ## Quick Start
 
