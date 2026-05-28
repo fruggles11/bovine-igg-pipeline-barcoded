@@ -37,8 +37,11 @@ Sequence all cells in a single undemultiplexed ONT run and demultiplex by the pl
 
 ```bash
 nextflow run fruggles11/bovine-igg-pipeline-barcoded \
-  --pooled_fastq /path/to/your_run.fastq.gz
+  --pooled_fastq /path/to/your_run.fastq.gz \
+  --keep_primers true
 ```
+
+Use `--keep_primers true` to retain the inner gene-specific primer sequences on reads after demultiplexing. Omit it (or set `false`) to have adapter trimming run instead.
 
 ### ONT barcode mode (original)
 
@@ -125,6 +128,7 @@ All directories matching `barcode*/` are auto-detected. Reads are classified as 
 | `--similar_species` | `90` | amplicon_sorter sequence addition threshold (%) |
 | `--similar_consensus` | `95` | amplicon_sorter consensus merging threshold (%) |
 | `--length_diff_consensus` | `10` | amplicon_sorter length variance allowance (%) |
+| `--keep_primers` | `false` | Skip adapter trimming and retain inner primer sequences on reads |
 | `--skip_annotation` | `false` | Skip IgBLAST annotation step |
 | `--results` | `./results` | Output directory |
 
