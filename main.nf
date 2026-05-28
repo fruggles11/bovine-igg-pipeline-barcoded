@@ -83,19 +83,24 @@ workflow {
 		ch_classified
 	)
 
-	FIND_ADAPTERS(
-		QUALITY_FILTER.out
-	)
-
-	// Trim adapters only (no primer trimming)
-	TRIM_PRIMERS(
-		QUALITY_FILTER.out
-			.join( FIND_ADAPTERS.out, by: [0, 1] )
-	)
+	if ( params.keep_primers ) {
+		// Skip adapter trimming and pass reads directly to clustering
+		ch_for_clustering = QUALITY_FILTER.out
+	} else {
+		// Detect and trim sequencing adapters
+		FIND_ADAPTERS(
+			QUALITY_FILTER.out
+		)
+		TRIM_PRIMERS(
+			QUALITY_FILTER.out
+				.join( FIND_ADAPTERS.out, by: [0, 1] )
+		)
+		ch_for_clustering = TRIM_PRIMERS.out
+	}
 
 	// Stage 4: Clustering & Consensus
 	CONVERT_TO_FASTA(
-		TRIM_PRIMERS.out
+		ch_for_clustering
 	)
 
 	CLUSTER_READS(
