@@ -189,6 +189,7 @@ process DEMULTIPLEX {
 		-F -T
 
 	# Compress per-cell files; drop zero-byte files (empty wells)
+	shopt -s nullglob
 	for f in *.fastq; do
 		if [ -s "\$f" ]; then
 			gzip "\$f"
