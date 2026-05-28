@@ -20,6 +20,9 @@ COPY --chown=$MAMBA_USER:$MAMBA_USER environment.yml /tmp/environment.yml
 RUN micromamba install -y -n base -f /tmp/environment.yml && \
     micromamba clean --all --yes
 
+# Install minibar
+RUN pip install minibar
+
 # Install amplicon_sorter
 RUN pip install amplicon-sorter || \
     (git clone https://github.com/avierstr/amplicon_sorter.git /opt/amplicon_sorter && \
