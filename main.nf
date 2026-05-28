@@ -8,62 +8,75 @@ nextflow.enable.dsl = 2
 // --------------------------------------------------------------- //
 workflow {
 
-	// Auto-detect all barcode directories
-	ch_barcodes = Channel
-		.fromPath( "${params.fastq_dir}/barcode*/", type: 'dir' )
-		.map { dir -> tuple( dir.getName(), dir ) }
-
-	// Load primers for trimming (chain-specific, grouped by chain)
-	ch_primers = Channel
-		.fromPath( params.primer_table )
-		.splitCsv( header: true )
-		.map { row -> tuple( row.chain, row.primer_seq, row.differentiating ) }
-		.filter { it[2] == "true" }
-		.groupTuple( by: 0 )
-		.map { chain, primers, diff -> tuple( chain, primers ) }
-
-	// Load classification primers (separated by chain type)
-	ch_class_primers = Channel
-		.fromPath( params.primer_table )
-		.splitCsv( header: true )
-		.filter { row -> row.differentiating == "true" }
-
-	heavy_primers = ch_class_primers
-		.filter { row -> row.chain == 'heavy' }
-		.map { row -> row.primer_seq }
-		.collect()
-
-	light_primers = ch_class_primers
-		.filter { row -> row.chain == 'light' }
-		.map { row -> row.primer_seq }
-		.collect()
-
 	// Germline gene files (if available)
 	ch_germlines = Channel
 		.fromPath( "${params.germline_dir}/*.fasta", checkIfExists: false )
 		.collect()
 		.ifEmpty( [] )
 
-	// Workflow steps
+	if ( params.pooled_fastq ) {
 
-	// Stage 1: Read Processing - Merge reads per barcode
-	MERGE_READS(
-		ch_barcodes
-	)
+		// PCR barcode mode: demultiplex a single pooled FASTQ by plate + well barcodes.
+		// All resulting reads are IgH-targeted, so chain classification is skipped.
+		DEMULTIPLEX(
+			Channel.fromPath( params.pooled_fastq ),
+			Channel.fromPath( params.barcode_index )
+		)
 
-	// Stage 2: Classify reads by primer sequence
-	CLASSIFY_BY_PRIMER(
-		MERGE_READS.out
-			.combine( heavy_primers )
-			.combine( light_primers )
-	)
+		ch_classified = DEMULTIPLEX.out
+			.flatten()
+			.filter { it.name ==~ /PB\d+_[A-H]\d+\.fastq\.gz/ }
+			.map { fastq ->
+				def cell_id = fastq.name.replaceAll( '\\.fastq\\.gz$', '' )
+				tuple( cell_id, "heavy", fastq )
+			}
+			.filter { cell_id, chain, fastq ->
+				fastq.countFastq() >= params.min_reads
+			}
 
-	// Combine heavy and light outputs, filter empty files
-	ch_classified = CLASSIFY_BY_PRIMER.out.heavy
-		.mix( CLASSIFY_BY_PRIMER.out.light )
-		.filter { barcode_id, chain, fastq ->
-			fastq.countFastq() >= params.min_reads
-		}
+	} else {
+
+		// ONT barcode directory mode: reads already demultiplexed by MinKNOW.
+		ch_barcodes = Channel
+			.fromPath( "${params.fastq_dir}/barcode*/", type: 'dir' )
+			.map { dir -> tuple( dir.getName(), dir ) }
+
+		// Load classification primers (separated by chain type)
+		ch_class_primers = Channel
+			.fromPath( params.primer_table )
+			.splitCsv( header: true )
+			.filter { row -> row.differentiating == "true" }
+
+		heavy_primers = ch_class_primers
+			.filter { row -> row.chain == 'heavy' }
+			.map { row -> row.primer_seq }
+			.collect()
+
+		light_primers = ch_class_primers
+			.filter { row -> row.chain == 'light' }
+			.map { row -> row.primer_seq }
+			.collect()
+
+		// Stage 1: Read Processing - Merge reads per barcode
+		MERGE_READS(
+			ch_barcodes
+		)
+
+		// Stage 2: Classify reads by primer sequence
+		CLASSIFY_BY_PRIMER(
+			MERGE_READS.out
+				.combine( heavy_primers )
+				.combine( light_primers )
+		)
+
+		// Combine heavy and light outputs, filter empty files
+		ch_classified = CLASSIFY_BY_PRIMER.out.heavy
+			.mix( CLASSIFY_BY_PRIMER.out.light )
+			.filter { barcode_id, chain, fastq ->
+				fastq.countFastq() >= params.min_reads
+			}
+
+	}
 
 	// Stage 3: Quality filter
 	QUALITY_FILTER(
@@ -139,7 +152,8 @@ if ( params.debugmode == true ){
 	errorMode = 'ignore'
 }
 
-params.merged_reads = params.results + "/1_merged_reads"
+params.demuxed_reads  = params.results + "/0_demuxed_reads"
+params.merged_reads   = params.results + "/1_merged_reads"
 params.classified_reads = params.results + "/2_classified_reads"
 params.filtered_reads = params.results + "/3_filtered_reads"
 params.consensus_seqs = params.results + "/4_consensus_sequences"
@@ -151,6 +165,40 @@ params.reports = params.results + "/6_reports"
 
 // PROCESS SPECIFICATION
 // --------------------------------------------------------------- //
+
+process DEMULTIPLEX {
+
+	publishDir "${params.demuxed_reads}", mode: 'copy', overwrite: true
+
+	errorStrategy { task.attempt < 3 ? 'retry' : errorMode }
+	maxRetries 2
+
+	cpus 4
+
+	input:
+	path pooled_fastq
+	path barcode_index
+
+	output:
+	path "*.fastq.gz"
+
+	script:
+	"""
+	minibar.py ${pooled_fastq} ${barcode_index} \
+		-e ${params.barcode_error} \
+		-F -T
+
+	# Compress per-cell files; drop zero-byte files (empty wells)
+	for f in *.fastq; do
+		if [ -s "\$f" ]; then
+			gzip "\$f"
+		else
+			rm -f "\$f"
+		fi
+	done
+	"""
+
+}
 
 process MERGE_READS {
 
