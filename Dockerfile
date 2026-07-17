@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y \
     wget \
     gzip \
     git \
+    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 # Create conda environment with bioinformatics tools
