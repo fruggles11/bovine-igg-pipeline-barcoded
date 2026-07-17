@@ -204,8 +204,8 @@ process DEMULTIPLEX {
 
 process MERGE_READS {
 
-	tag "${barcode_id}"
-	publishDir "${params.merged_reads}/${barcode_id}", mode: 'copy', overwrite: true
+	tag { "${barcode_id}" }
+	publishDir path: { "${params.merged_reads}/${barcode_id}" }, mode: 'copy', overwrite: true
 
 	errorStrategy { task.attempt < 3 ? 'retry' : params.errorMode }
 	maxRetries 2
@@ -227,8 +227,8 @@ process MERGE_READS {
 
 process CLASSIFY_BY_PRIMER {
 
-	tag "${barcode_id}"
-	publishDir "${params.classified_reads}/${barcode_id}", mode: 'copy', overwrite: true
+	tag { "${barcode_id}" }
+	publishDir path: { "${params.classified_reads}/${barcode_id}" }, mode: 'copy', overwrite: true
 
 	errorStrategy { task.attempt < 3 ? 'retry' : params.errorMode }
 	maxRetries 2
@@ -282,8 +282,8 @@ LIGHT_EOF
 
 process QUALITY_FILTER {
 
-	tag "${barcode_id}_${chain}"
-	publishDir "${params.filtered_reads}/${barcode_id}", mode: 'copy', overwrite: true
+	tag { "${barcode_id}_${chain}" }
+	publishDir path: { "${params.filtered_reads}/${barcode_id}" }, mode: 'copy', overwrite: true
 
 	errorStrategy { task.attempt < 3 ? 'retry' : params.errorMode }
 	maxRetries 2
@@ -312,7 +312,7 @@ process QUALITY_FILTER {
 
 process FIND_ADAPTERS {
 
-	tag "${barcode_id}_${chain}"
+	tag { "${barcode_id}_${chain}" }
 
 	errorStrategy { task.attempt < 3 ? 'retry' : params.errorMode }
 	maxRetries 2
@@ -332,8 +332,8 @@ process FIND_ADAPTERS {
 
 process TRIM_PRIMERS {
 
-	tag "${barcode_id}_${chain}"
-	publishDir "${params.filtered_reads}/${barcode_id}", mode: 'copy', overwrite: true
+	tag { "${barcode_id}_${chain}" }
+	publishDir path: { "${params.filtered_reads}/${barcode_id}" }, mode: 'copy', overwrite: true
 
 	errorStrategy { task.attempt < 3 ? 'retry' : params.errorMode }
 	maxRetries 2
@@ -365,7 +365,7 @@ process TRIM_PRIMERS {
 
 process CONVERT_TO_FASTA {
 
-	tag "${barcode_id}_${chain}"
+	tag { "${barcode_id}_${chain}" }
 
 	errorStrategy { task.attempt < 3 ? 'retry' : params.errorMode }
 	maxRetries 2
@@ -385,8 +385,8 @@ process CONVERT_TO_FASTA {
 
 process CLUSTER_READS {
 
-	tag "${barcode_id}_${chain}"
-	publishDir "${params.consensus_seqs}/${barcode_id}", mode: 'copy', overwrite: true
+	tag { "${barcode_id}_${chain}" }
+	publishDir path: { "${params.consensus_seqs}/${barcode_id}" }, mode: 'copy', overwrite: true
 
 	errorStrategy { task.attempt < 3 ? 'retry' : params.errorMode }
 	maxRetries 2
@@ -444,8 +444,8 @@ process BUILD_IGBLAST_DB {
 
 process ANNOTATE_IGBLAST {
 
-	tag "${barcode_id}_${chain}"
-	publishDir "${params.annotations}/${barcode_id}", mode: 'copy', overwrite: true
+	tag { "${barcode_id}_${chain}" }
+	publishDir path: { "${params.annotations}/${barcode_id}" }, mode: 'copy', overwrite: true
 
 	errorStrategy 'ignore'
 
@@ -482,8 +482,8 @@ process ANNOTATE_IGBLAST {
 
 process PARSE_ANNOTATIONS {
 
-	tag "${barcode_id}_${chain}"
-	publishDir "${params.annotations}/${barcode_id}", mode: 'copy', overwrite: true
+	tag { "${barcode_id}_${chain}" }
+	publishDir path: { "${params.annotations}/${barcode_id}" }, mode: 'copy', overwrite: true
 
 	errorStrategy 'ignore'
 
