@@ -151,7 +151,7 @@ workflow {
 
 // DERIVATIVE PARAMETER SPECIFICATION
 // --------------------------------------------------------------- //
-def errorMode = params.debugmode == true ? 'terminate' : 'ignore'
+params.errorMode = params.debugmode == true ? 'terminate' : 'ignore'
 
 params.demuxed_reads  = params.results + "/0_demuxed_reads"
 params.merged_reads   = params.results + "/1_merged_reads"
@@ -171,7 +171,7 @@ process DEMULTIPLEX {
 
 	publishDir "${params.demuxed_reads}", mode: 'copy', overwrite: true
 
-	errorStrategy { task.attempt < 3 ? 'retry' : errorMode }
+	errorStrategy { task.attempt < 3 ? 'retry' : params.errorMode }
 	maxRetries 2
 
 	cpus 4
@@ -207,7 +207,7 @@ process MERGE_READS {
 	tag "${barcode_id}"
 	publishDir "${params.merged_reads}/${barcode_id}", mode: 'copy', overwrite: true
 
-	errorStrategy { task.attempt < 3 ? 'retry' : errorMode }
+	errorStrategy { task.attempt < 3 ? 'retry' : params.errorMode }
 	maxRetries 2
 
 	cpus 4
@@ -230,7 +230,7 @@ process CLASSIFY_BY_PRIMER {
 	tag "${barcode_id}"
 	publishDir "${params.classified_reads}/${barcode_id}", mode: 'copy', overwrite: true
 
-	errorStrategy { task.attempt < 3 ? 'retry' : errorMode }
+	errorStrategy { task.attempt < 3 ? 'retry' : params.errorMode }
 	maxRetries 2
 
 	cpus 4
@@ -285,7 +285,7 @@ process QUALITY_FILTER {
 	tag "${barcode_id}_${chain}"
 	publishDir "${params.filtered_reads}/${barcode_id}", mode: 'copy', overwrite: true
 
-	errorStrategy { task.attempt < 3 ? 'retry' : errorMode }
+	errorStrategy { task.attempt < 3 ? 'retry' : params.errorMode }
 	maxRetries 2
 
 	cpus 4
@@ -314,7 +314,7 @@ process FIND_ADAPTERS {
 
 	tag "${barcode_id}_${chain}"
 
-	errorStrategy { task.attempt < 3 ? 'retry' : errorMode }
+	errorStrategy { task.attempt < 3 ? 'retry' : params.errorMode }
 	maxRetries 2
 
 	input:
@@ -335,7 +335,7 @@ process TRIM_PRIMERS {
 	tag "${barcode_id}_${chain}"
 	publishDir "${params.filtered_reads}/${barcode_id}", mode: 'copy', overwrite: true
 
-	errorStrategy { task.attempt < 3 ? 'retry' : errorMode }
+	errorStrategy { task.attempt < 3 ? 'retry' : params.errorMode }
 	maxRetries 2
 
 	cpus 4
@@ -367,7 +367,7 @@ process CONVERT_TO_FASTA {
 
 	tag "${barcode_id}_${chain}"
 
-	errorStrategy { task.attempt < 3 ? 'retry' : errorMode }
+	errorStrategy { task.attempt < 3 ? 'retry' : params.errorMode }
 	maxRetries 2
 
 	input:
@@ -388,7 +388,7 @@ process CLUSTER_READS {
 	tag "${barcode_id}_${chain}"
 	publishDir "${params.consensus_seqs}/${barcode_id}", mode: 'copy', overwrite: true
 
-	errorStrategy { task.attempt < 3 ? 'retry' : errorMode }
+	errorStrategy { task.attempt < 3 ? 'retry' : params.errorMode }
 	maxRetries 2
 
 	cpus 4
@@ -418,7 +418,7 @@ process CLUSTER_READS {
 
 process BUILD_IGBLAST_DB {
 
-	errorStrategy { task.attempt < 3 ? 'retry' : errorMode }
+	errorStrategy { task.attempt < 3 ? 'retry' : params.errorMode }
 	maxRetries 2
 
 	input:
@@ -509,7 +509,7 @@ process COLLECT_STATS {
 
 	publishDir params.reports, mode: 'copy', overwrite: true
 
-	errorStrategy { task.attempt < 3 ? 'retry' : errorMode }
+	errorStrategy { task.attempt < 3 ? 'retry' : params.errorMode }
 	maxRetries 2
 
 	input:
@@ -565,7 +565,7 @@ process COLLECT_CONSENSUS_STATS {
 
 	publishDir params.reports, mode: 'copy', overwrite: true
 
-	errorStrategy { task.attempt < 3 ? 'retry' : errorMode }
+	errorStrategy { task.attempt < 3 ? 'retry' : params.errorMode }
 	maxRetries 2
 
 	input:
