@@ -189,9 +189,12 @@ process DEMULTIPLEX {
 		-e ${params.barcode_error} \
 		-F -P "" -T
 
-	# Compress per-cell files; drop zero-byte files (empty wells)
+	# Drop zero-length reads (Nextflow's FastqSplitter/.countFastq() treats
+	# them as malformed records due to Groovy's empty-string falsiness),
+	# then compress per-cell files; drop now-empty files (empty wells)
 	shopt -s nullglob
 	for f in *.fastq; do
+		seqkit seq -m 1 "\$f" -o "\${f}.tmp" && mv "\${f}.tmp" "\$f"
 		if [ -s "\$f" ]; then
 			gzip "\$f"
 		else
