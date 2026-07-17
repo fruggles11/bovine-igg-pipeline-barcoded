@@ -151,11 +151,7 @@ workflow {
 
 // DERIVATIVE PARAMETER SPECIFICATION
 // --------------------------------------------------------------- //
-if ( params.debugmode == true ){
-	errorMode = 'terminate'
-} else {
-	errorMode = 'ignore'
-}
+def errorMode = params.debugmode == true ? 'terminate' : 'ignore'
 
 params.demuxed_reads  = params.results + "/0_demuxed_reads"
 params.merged_reads   = params.results + "/1_merged_reads"
