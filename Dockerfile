@@ -24,8 +24,12 @@ RUN micromamba install -y -n base -f /tmp/environment.yml && \
 # Activate the micromamba env for all subsequent RUN steps
 ARG MAMBA_DOCKERFILE_ACTIVATE=1
 
-# Install minibar
-RUN pip install minibar
+# Install minibar (the calacademy-research ONT/Sanger demultiplexer, not the
+# unrelated "minibar" progress-bar package on PyPI)
+RUN pip install edlib && \
+    git clone https://github.com/calacademy-research/minibar.git /opt/minibar && \
+    chmod +x /opt/minibar/minibar.py && \
+    ln -s /opt/minibar/minibar.py /usr/local/bin/minibar.py
 
 # Install amplicon_sorter
 RUN pip install amplicon-sorter || \
