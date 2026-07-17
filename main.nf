@@ -187,7 +187,7 @@ process DEMULTIPLEX {
 	"""
 	minibar.py ${barcode_index} ${pooled_fastq} \
 		-e ${params.barcode_error} \
-		-F -T
+		-F -P "" -T
 
 	# Compress per-cell files; drop zero-byte files (empty wells)
 	shopt -s nullglob
