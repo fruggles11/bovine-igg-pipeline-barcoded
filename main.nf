@@ -185,7 +185,7 @@ process DEMULTIPLEX {
 
 	script:
 	"""
-	minibar.py ${pooled_fastq} ${barcode_index} \
+	minibar.py ${barcode_index} ${pooled_fastq} \
 		-e ${params.barcode_error} \
 		-F -T
 
