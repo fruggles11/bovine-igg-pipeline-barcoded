@@ -33,9 +33,11 @@ RUN pip install edlib && \
     chmod +x /opt/minibar/minibar.py && \
     ln -s /opt/minibar/minibar.py /usr/local/bin/minibar.py
 
-# Install amplicon_sorter
+# Install amplicon_sorter (strip Windows CRLF line endings from the repo's
+# source file, which break the #!/usr/bin/env python3 shebang under exec)
 RUN pip install amplicon-sorter || \
     (git clone https://github.com/avierstr/amplicon_sorter.git /opt/amplicon_sorter && \
+    sed -i 's/\r$//' /opt/amplicon_sorter/amplicon_sorter.py && \
     chmod +x /opt/amplicon_sorter/amplicon_sorter.py && \
     ln -s /opt/amplicon_sorter/amplicon_sorter.py /usr/local/bin/amplicon_sorter.py)
 
