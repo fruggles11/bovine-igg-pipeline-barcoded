@@ -123,8 +123,9 @@ workflow {
 		)
 
 		// Stage 6: Reporting
+		// Extract only the annotations.tsv path (third element) before collecting
 		COLLECT_STATS(
-			PARSE_ANNOTATIONS.out.collect()
+			PARSE_ANNOTATIONS.out.map { barcode_id, chain, annotations_tsv, cdr3_fasta -> annotations_tsv }.collect()
 		)
 	} else {
 		// Skip annotation, just collect consensus stats
