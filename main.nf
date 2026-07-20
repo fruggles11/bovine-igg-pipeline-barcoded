@@ -395,7 +395,14 @@ process CLUSTER_READS {
 	errorStrategy { task.attempt < 3 ? 'retry' : params.errorMode }
 	maxRetries 2
 
-	cpus 4
+	// amplicon_sorter's -np multiprocessing gives no measurable speedup for
+	// this pipeline's per-cell read counts (verified: -np 1 vs -np 4 on a
+	// real 300-read cell took identical wall time, ~3s of actual CPU work
+	// against ~70s wall time either way -- the runtime is dominated by
+	// fixed per-iteration overhead, not parallelizable computation).
+	// Reserving 4 cpus per task for no benefit was capping Nextflow to
+	// ~2 concurrent CLUSTER_READS tasks instead of ~10.
+	cpus 1
 
 	input:
 	tuple val(barcode_id), val(chain), path(fasta)
