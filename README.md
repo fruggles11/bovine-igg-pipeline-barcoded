@@ -129,7 +129,8 @@ All directories matching `barcode*/` are auto-detected. Reads are classified as 
 | `--similar_consensus` | `95` | amplicon_sorter consensus merging threshold (%) |
 | `--length_diff_consensus` | `10` | amplicon_sorter length variance allowance (%) |
 | `--keep_primers` | `false` | Skip adapter trimming and retain inner primer sequences on reads |
-| `--skip_annotation` | `false` | Skip IgBLAST annotation step |
+| `--skip_annotation` | `false` | Skip repertoire analysis (V(D)J annotation, clonal assignment, diversity analysis) |
+| `--clone_threshold` | `0.15` | Junction hamming distance threshold for clone definition |
 | `--results` | `./results` | Output directory |
 
 ## Output
@@ -147,9 +148,7 @@ results/
 │   └── PB01_A01/
 │       └── PB01_A01_heavy_consensus/
 ├── 5_majority_consensus/    # one dominant-cluster FASTA per cell, for e.g. Geneious import
-├── 6_annotations/           # if --skip_annotation false
-└── 7_reports/
-    └── summary_stats.tsv
+└── 6_repertoire_analysis/   # if --skip_annotation false -- see below
 ```
 
 ### ONT barcode mode
@@ -165,20 +164,41 @@ results/
 ├── 3_filtered_reads/
 ├── 4_consensus_sequences/
 ├── 5_majority_consensus/    # one dominant-cluster FASTA per cell, for e.g. Geneious import
-├── 6_annotations/           # if --skip_annotation false
-└── 7_reports/
-    └── summary_stats.tsv
+└── 6_repertoire_analysis/   # if --skip_annotation false -- see below
 ```
 
-## Setting Up IgBLAST Annotation (Optional)
+### `6_repertoire_analysis/` in detail
 
-Download bovine germline genes from IMGT and save them in `resources/germlines/`:
+```
+6_repertoire_analysis/
+├── igblast_db/               # bovine V/D/J BLAST databases built from --germline_dir
+├── igblast/                  # raw per-cell IgBLAST output
+├── airr/                     # per-cell AIRR-format TSVs (Change-O MakeDb.py)
+├── airr_junction_filled/     # same, with missing CDR3/junction calls backfilled
+├── filtered/                 # productivity-filtered AIRR TSVs
+├── clones/                   # per-cell clone assignments (Change-O DefineClones.py)
+├── reports/
+│   └── vdj_summary.tsv       # combined V/D/J calls, one row per cell, with a
+│                              # junction_source column (igblast vs anchor -- see below)
+├── diversity/
+│   ├── stats/                # CSV files: basic stats, gene usage, clone sizes, diversity indices
+│   └── plots/                # PDF/PNG: CDR3 length, gene usage, clone size, diversity/rarefaction curves
+└── repertoire_report.html
+```
+
+## Setting Up Repertoire Analysis (Optional)
+
+Requires bovine germline gene FASTA files from IMGT — the same files used for the pipeline's other stages. Download and save them in `resources/germlines/` (or wherever `--germline_dir` points):
 
 1. Go to [IMGT/GENE-DB](https://www.imgt.org/genedb/)
 2. For each segment, select Species: *Bos taurus*, Functionality: functional, and export as FASTA
 3. Save as: `bovine_IGHV.fasta`, `bovine_IGHD.fasta`, `bovine_IGHJ.fasta`, `bovine_IGKV.fasta`, `bovine_IGKJ.fasta`, `bovine_IGLV.fasta`, `bovine_IGLJ.fasta`
 
 Run with `--skip_annotation true` if germline files are not available.
+
+This stage uses the [Immcantation](https://immcantation.readthedocs.io/) framework (IgBLAST + Change-O + Alakazam) for V(D)J annotation, clonal assignment, and diversity analysis, via the `immcantation/suite:4.5.0` container (pulled automatically). Bovine has no official IgBLAST auxiliary data, so IgBLAST's own junction/CDR3 calling silently misses some sequences (notably bovine's hallmark ultra-long CDR3H3, which can exceed its internal detection window); an anchor-based fallback backfills those gaps by scanning for the conserved J-region motif against the real IGHJ germline. Each row in `vdj_summary.tsv` is tagged with `junction_source` (`igblast` or `anchor`) so you always know which method produced a given call.
+
+This logic is maintained in [bovine-repertoire-analysis](https://github.com/fruggles11/bovine-repertoire-analysis), which also remains usable standalone — e.g. to reprocess consensus output from an older run, or to run its ultra-long CDR3H3 filter separately.
 
 ## Bovine IgG Considerations
 

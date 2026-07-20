@@ -113,42 +113,80 @@ workflow {
 		CLUSTER_READS.out
 	)
 
-	// Stage 6: Annotation (conditional on germline files being available)
+	// Stage 6: Repertoire analysis (V(D)J annotation, clonal assignment,
+	// and diversity analysis via the Immcantation framework -- IgBLAST +
+	// Change-O + Alakazam). Runs on the majority consensus sequence per
+	// cell. Requires germline files; skip with --skip_annotation true.
 	if ( !params.skip_annotation ) {
+
+		if ( !params.germline_dir ) {
+			error """
+			=====================================================================
+			ERROR: Bovine germline database is required for repertoire analysis
+			=====================================================================
+			Download germline FASTA files from IMGT/GENE-DB and pass their
+			directory via --germline_dir, or skip this stage entirely with
+			--skip_annotation true.
+			=====================================================================
+			""".stripIndent()
+		}
+
+		// Skip cells EXTRACT_MAJORITY_CONSENSUS couldn't build a confident
+		// consensus for (empty placeholder file) -- MakeDb.py crashes hard
+		// on an empty input instead of skipping it.
+		ch_repertoire_input = EXTRACT_MAJORITY_CONSENSUS.out
+			.filter { barcode_id, chain, fasta -> fasta.size() > 0 }
+			.map { barcode_id, chain, fasta -> tuple( "${barcode_id}_${chain}", fasta ) }
+
 		BUILD_IGBLAST_DB(
 			ch_germlines
 		)
 
-		ANNOTATE_IGBLAST(
-			BUILD_IGBLAST_DB.out,
-			CLUSTER_READS.out
+		IGBLAST_ANNOTATION(
+			ch_repertoire_input,
+			BUILD_IGBLAST_DB.out.db,
+			BUILD_IGBLAST_DB.out.aux
 		)
 
-		PARSE_ANNOTATIONS(
-			ANNOTATE_IGBLAST.out
+		MAKEDB(
+			IGBLAST_ANNOTATION.out,
+			ch_germlines
 		)
 
-		// Stage 7: Reporting
-		// Extract only the annotations.tsv path (third element) before collecting
-		COLLECT_STATS(
-			PARSE_ANNOTATIONS.out.map { barcode_id, chain, annotations_tsv, cdr3_fasta -> annotations_tsv }.collect()
+		// Backfill CDR3/junction calls IgBLAST's heuristic missed (e.g.
+		// bovine ultra-long CDR3H3, which exceed its internal detection
+		// window)
+		INFER_JUNCTION(
+			MAKEDB.out,
+			ch_germlines,
+			file( "${projectDir}/bin/infer_missing_junction.py" )
 		)
-	} else {
-		// Skip annotation, just collect consensus stats
-		// Extract only the path (third element) from the tuple before collecting
-		COLLECT_CONSENSUS_STATS(
-			CLUSTER_READS.out.map { barcode_id, chain, consensus_dir -> consensus_dir }.collect()
-		)
-	}
 
-	if ( !params.skip_annotation ) {
+		FILTER_PRODUCTIVE(
+			INFER_JUNCTION.out
+		)
+
+		DEFINE_CLONES(
+			FILTER_PRODUCTIVE.out
+		)
+
+		// Combine per-cell AIRR TSVs into one VDJ summary TSV
+		SUMMARIZE_VDJ(
+			FILTER_PRODUCTIVE.out
+				.map { sample_id, tsv -> tsv }
+				.collect(),
+			file( "${projectDir}/bin/summarize_vdj.py" )
+		)
+
+		DIVERSITY_ANALYSIS(
+			DEFINE_CLONES.out.collect()
+		)
+
 		GENERATE_REPORT(
-			COLLECT_STATS.out
+			DIVERSITY_ANALYSIS.out.plots,
+			DIVERSITY_ANALYSIS.out.stats
 		)
-	} else {
-		GENERATE_REPORT(
-			COLLECT_CONSENSUS_STATS.out
-		)
+
 	}
 
 }
@@ -166,8 +204,7 @@ params.classified_reads = params.results + "/2_classified_reads"
 params.filtered_reads = params.results + "/3_filtered_reads"
 params.consensus_seqs = params.results + "/4_consensus_sequences"
 params.majority_consensus = params.results + "/5_majority_consensus"
-params.annotations = params.results + "/6_annotations"
-params.reports = params.results + "/7_reports"
+params.repertoire_results = params.results + "/6_repertoire_analysis"
 // --------------------------------------------------------------- //
 
 
@@ -490,210 +527,700 @@ process EXTRACT_MAJORITY_CONSENSUS {
 
 }
 
+// The following processes are ported from bovine-repertoire-analysis
+// (https://github.com/fruggles11/bovine-repertoire-analysis), which remains
+// available standalone for reprocessing older consensus output or running
+// the ultra-long CDR3H3 filter. They use the Immcantation suite's own
+// container rather than this pipeline's image, and that container only
+// ships an amd64 build, hence the explicit --platform on each one.
 process BUILD_IGBLAST_DB {
+
+	container 'immcantation/suite:4.5.0'
+	containerOptions '--platform linux/amd64'
+
+	publishDir "${params.repertoire_results}/igblast_db", mode: 'copy'
 
 	errorStrategy { task.attempt < 3 ? 'retry' : params.errorMode }
 	maxRetries 2
 
 	input:
-	path fastas
+	path germlines
 
 	output:
-	path "bovine_ig_db_*"
+	path "database/*", emit: db
+	path "internal_data/*", emit: aux
 
 	script:
 	"""
-	# IgBLAST requires separate V, D, and J germline databases (not one
-	# combined blob for all three) -- sort each input fasta into the right
-	# segment by the letter preceding its extension or a "_gaps" suffix
-	# (e.g. bovine_IGHV.fasta or Bos_taurus_IgHV_gaps.fasta both end in V).
-	for f in *.fasta; do
-		base="\${f%.fasta}"
-		base="\${base%_gaps}"
-		segment="\${base: -1}"
-		case "\$segment" in
-			V) cat "\$f" >> v_genes.fasta ;;
-			D) cat "\$f" >> d_genes.fasta ;;
-			J) cat "\$f" >> j_genes.fasta ;;
-		esac
+	mkdir -p database internal_data
+
+	# Separate V, D, J genes based on filename patterns (case-insensitive,
+	# searched recursively with -L to follow Nextflow's symlinked path inputs)
+	find -L . -type f \\( -iname "*IGHV*" -o -iname "*IGKV*" -o -iname "*IGLV*" \\) | while read f; do
+		cat "\$f" >> database/bovine_V.fasta 2>/dev/null
+	done
+	find -L . -type f -iname "*IGHD*" | while read f; do
+		cat "\$f" >> database/bovine_D.fasta 2>/dev/null
+	done
+	find -L . -type f \\( -iname "*IGHJ*" -o -iname "*IGKJ*" -o -iname "*IGLJ*" \\) | while read f; do
+		cat "\$f" >> database/bovine_J.fasta 2>/dev/null
 	done
 
-	for segment in V D J; do
-		infile=\$(echo "\$segment" | tr 'A-Z' 'a-z')_genes.fasta
-		if [ -s "\$infile" ]; then
-			# Format for IgBLAST (remove gaps, standardize headers)
-			sed 's/\\./-/g' "\$infile" | \
-			awk '/^>/{print; next}{gsub(/\\./, ""); print}' > bovine_ig_db_\${segment}
-			makeblastdb -parse_seqids -dbtype nucl -in bovine_ig_db_\${segment}
+	touch database/bovine_V.fasta database/bovine_D.fasta database/bovine_J.fasta
+
+	cd database
+	for f in bovine_*.fasta; do
+		if [[ -s "\$f" ]]; then
+			makeblastdb -parse_seqids -dbtype nucl -in "\$f"
 		fi
 	done
+	cd ..
+
+	# Copy internal data from the container's IGDATA if available
+	if [[ -n "\${IGDATA:-}" ]] && [[ -d "\${IGDATA}/internal_data" ]]; then
+		cp -r "\${IGDATA}/internal_data/"* internal_data/ 2>/dev/null || true
+	fi
+
+	# Bovine has no real IgBLAST auxiliary data (frame anchor positions per
+	# J-gene name) -- this placeholder is why INFER_JUNCTION exists
+	# downstream to backfill the junction calls IgBLAST can't make without it.
+	mkdir -p internal_data/bovine
+	cat > internal_data/bovine/bovine_gl.aux << 'AUXFILE'
+# Bovine germline auxiliary data
+# Frame information for bovine IG genes
+AUXFILE
 	"""
 
 }
 
-process ANNOTATE_IGBLAST {
+process IGBLAST_ANNOTATION {
 
-	tag { "${barcode_id}_${chain}" }
-	publishDir path: { "${params.annotations}/${barcode_id}" }, mode: 'copy', overwrite: true
+	container 'immcantation/suite:4.5.0'
+	containerOptions '--platform linux/amd64'
 
-	errorStrategy 'ignore'
+	tag { "${sample_id}" }
+	publishDir "${params.repertoire_results}/igblast", mode: 'copy'
+
+	errorStrategy { task.attempt < 3 ? 'retry' : params.errorMode }
+	maxRetries 2
+
+	cpus 4
 
 	input:
-	path db_files
-	tuple val(barcode_id), val(chain), path(consensus_dir)
+	tuple val(sample_id), path(fasta)
+	path db
+	path aux
 
 	output:
-	tuple val(barcode_id), val(chain), path("${barcode_id}_${chain}_igblast.tsv"), path(consensus_dir)
+	tuple val(sample_id), path("${sample_id}_igblast.fmt7"), path(fasta)
 
 	script:
 	"""
-	# Find the definitive consensus fasta (amplicon_sorter's *_consensussequences.fasta).
-	# -L is required because Nextflow stages path inputs as symlinks, which find
-	# won't traverse into as a starting argument without it.
-	consensus_fasta=\$(find -L ${consensus_dir} -name "*_consensussequences.fasta" | head -1)
+	mkdir -p igblast_data/database
+	for f in ${db}; do
+		cp "\$f" igblast_data/database/
+	done
 
-	if [ -z "\$consensus_fasta" ]; then
-		# If no fasta found, create empty output
-		echo "No consensus sequences found" > ${barcode_id}_${chain}_igblast.tsv
+	if [[ -n "\${IGDATA:-}" ]] && [[ -d "\${IGDATA}/internal_data" ]]; then
+		cp -r "\${IGDATA}/internal_data" igblast_data/
 	else
-		# Run IgBLAST with custom bovine database
-		igblastn \
-		-germline_db_V bovine_ig_db_V \
-		-germline_db_J bovine_ig_db_J \
-		-germline_db_D bovine_ig_db_D \
-		-auxiliary_data optional_file/human_gl.aux \
-		-query "\$consensus_fasta" \
-		-outfmt "7 std qseq sseq" \
-		-out ${barcode_id}_${chain}_igblast.tsv \
-		|| echo "IgBLAST completed with warnings" > ${barcode_id}_${chain}_igblast.tsv
+		for path in /usr/local/share/igblast/internal_data /usr/share/igblast/internal_data; do
+			if [[ -d "\$path" ]]; then
+				cp -r "\$path" igblast_data/
+				break
+			fi
+		done
+	fi
+
+	export IGDATA="\$(pwd)/igblast_data"
+
+	# -organism human is required for IgBLAST's internal_data validation;
+	# the actual annotation uses our bovine databases via -germline_db_*
+	igblastn \
+		-query ${fasta} \
+		-out ${sample_id}_igblast.fmt7 \
+		-num_threads ${task.cpus} \
+		-ig_seqtype Ig \
+		-organism human \
+		-germline_db_V "\${IGDATA}/database/bovine_V.fasta" \
+		-germline_db_D "\${IGDATA}/database/bovine_D.fasta" \
+		-germline_db_J "\${IGDATA}/database/bovine_J.fasta" \
+		-outfmt "7 std qseq sseq btop" \
+		-domain_system imgt
+	"""
+
+}
+
+process MAKEDB {
+
+	container 'immcantation/suite:4.5.0'
+	containerOptions '--platform linux/amd64'
+
+	tag { "${sample_id}" }
+	publishDir "${params.repertoire_results}/airr", mode: 'copy'
+
+	errorStrategy { task.attempt < 3 ? 'retry' : params.errorMode }
+	maxRetries 2
+
+	input:
+	tuple val(sample_id), path(igblast_out), path(fasta)
+	path germlines
+
+	output:
+	tuple val(sample_id), path("${sample_id}_db-pass.tsv")
+
+	script:
+	"""
+	find -L . -type f \\( -iname "*IGHV*" -o -iname "*IGKV*" -o -iname "*IGLV*" \\) | while read f; do
+		cat "\$f" >> combined_V.fasta 2>/dev/null
+	done
+	find -L . -type f -iname "*IGHD*" | while read f; do
+		cat "\$f" >> combined_D.fasta 2>/dev/null
+	done
+	find -L . -type f \\( -iname "*IGHJ*" -o -iname "*IGKJ*" -o -iname "*IGLJ*" \\) | while read f; do
+		cat "\$f" >> combined_J.fasta 2>/dev/null
+	done
+	touch combined_V.fasta combined_D.fasta combined_J.fasta
+
+	# --infer-junction extracts junction/CDR3 from alignments directly,
+	# since bovine has no real IgBLAST auxiliary data (see BUILD_IGBLAST_DB)
+	MakeDb.py igblast \
+		-i ${igblast_out} \
+		-s ${fasta} \
+		-r combined_V.fasta combined_D.fasta combined_J.fasta \
+		--extended \
+		--partial \
+		--infer-junction \
+		--format airr \
+		-o ${sample_id}_db.tsv
+
+	if [[ -f "${sample_id}_db.tsv" ]] && [[ ! -f "${sample_id}_db-pass.tsv" ]]; then
+		mv ${sample_id}_db.tsv ${sample_id}_db-pass.tsv
+	elif [[ -f "${sample_id}_db_db-pass.tsv" ]]; then
+		mv ${sample_id}_db_db-pass.tsv ${sample_id}_db-pass.tsv
+	fi
+
+	if [[ ! -f "${sample_id}_db-pass.tsv" ]]; then
+		echo -e "sequence_id\\tv_call\\td_call\\tj_call\\tsequence\\tproductive" > ${sample_id}_db-pass.tsv
 	fi
 	"""
 
 }
 
-process PARSE_ANNOTATIONS {
+process INFER_JUNCTION {
 
-	tag { "${barcode_id}_${chain}" }
-	publishDir path: { "${params.annotations}/${barcode_id}" }, mode: 'copy', overwrite: true
+	container 'immcantation/suite:4.5.0'
+	containerOptions '--platform linux/amd64'
 
-	errorStrategy 'ignore'
-
-	input:
-	tuple val(barcode_id), val(chain), path(igblast_out), path(consensus_dir)
-
-	output:
-	tuple val(barcode_id), val(chain), path("${barcode_id}_${chain}_annotations.tsv"), path("${barcode_id}_${chain}_cdr3.fasta")
-
-	script:
-	"""
-	parse_igblast.py \
-	--input ${igblast_out} \
-	--consensus_dir ${consensus_dir} \
-	--chain ${chain} \
-	--output_tsv ${barcode_id}_${chain}_annotations.tsv \
-	--output_cdr3 ${barcode_id}_${chain}_cdr3.fasta
-	"""
-
-}
-
-process COLLECT_STATS {
-
-	publishDir params.reports, mode: 'copy', overwrite: true
+	tag { "${sample_id}" }
+	publishDir "${params.repertoire_results}/airr_junction_filled", mode: 'copy'
 
 	errorStrategy { task.attempt < 3 ? 'retry' : params.errorMode }
 	maxRetries 2
 
 	input:
-	path annotations
+	tuple val(sample_id), path(airr_tsv)
+	path germlines
+	path infer_script
 
 	output:
-	path "summary_stats.tsv"
+	tuple val(sample_id), path("${sample_id}_db-pass.tsv")
 
 	script:
 	"""
-	echo -e "barcode\tchain\tnum_sequences\tnum_unique_v\tnum_unique_j\tavg_cdr3_len" > summary_stats.tsv
-
-	for f in *_annotations.tsv; do
-		# Extract barcode and chain from filename (format: barcode_chain_annotations.tsv)
-		basename=\$(basename "\$f" _annotations.tsv)
-		barcode=\$(echo "\$basename" | rev | cut -d'_' -f2- | rev)
-		chain=\$(echo "\$basename" | rev | cut -d'_' -f1 | rev)
-		if [ -s "\$f" ]; then
-			num_seqs=\$(tail -n +2 "\$f" | wc -l)
-			# Columns: sequence_id, chain, v_gene, v_identity, d_gene,
-			# d_identity, j_gene, j_identity, cdr3_length
-			stats=\$(tail -n +2 "\$f" | awk -F'\t' '
-				\$3 != "NA" { v[\$3] = 1 }
-				\$7 != "NA" { j[\$7] = 1 }
-				\$9 != "NA" { sum += \$9; n++ }
-				END {
-					if (n > 0) {
-						printf "%d\t%d\t%.1f", length(v), length(j), sum / n
-					} else {
-						printf "%d\t%d\tNA", length(v), length(j)
-					}
-				}
-			')
-			echo -e "\${barcode}\t\${chain}\t\${num_seqs}\t\${stats}" >> summary_stats.tsv
-		fi
+	# Heavy-chain J germline only -- the anchor fallback targets CDR3H3.
+	# IgBLAST's junction heuristic silently leaves junction_aa blank for
+	# some bovine heavy chain sequences (e.g. ultra-long CDR3H3, which
+	# exceed its internal detection window) even though V/D/J were called.
+	find -L . -type f -iname "*IGHJ*" | while read f; do
+		cat "\$f" >> ighj_germline.fasta 2>/dev/null
 	done
+	touch ighj_germline.fasta
+
+	python3 ${infer_script} \
+		--input ${airr_tsv} \
+		--germline ighj_germline.fasta \
+		--output ${sample_id}_db-pass.tsv
+	"""
+
+}
+
+process FILTER_PRODUCTIVE {
+
+	container 'immcantation/suite:4.5.0'
+	containerOptions '--platform linux/amd64'
+
+	tag { "${sample_id}" }
+	publishDir "${params.repertoire_results}/filtered", mode: 'copy'
+
+	errorStrategy { task.attempt < 3 ? 'retry' : params.errorMode }
+	maxRetries 2
+
+	input:
+	tuple val(sample_id), path(airr_tsv)
+
+	output:
+	tuple val(sample_id), path("${sample_id}_productive.tsv")
+
+	script:
+	if (params.skip_productive_filter)
+		"""
+		# Productivity filtering skipped (--skip_productive_filter true,
+		# the default -- our germlines aren't IMGT-gapped, so productivity
+		# calls aren't reliable)
+		cp ${airr_tsv} ${sample_id}_productive.tsv
+		"""
+	else
+		"""
+		line_count=\$(wc -l < ${airr_tsv})
+
+		if [[ \$line_count -le 1 ]]; then
+			cp ${airr_tsv} ${sample_id}_productive.tsv
+		else
+			ParseDb.py select \
+				-d ${airr_tsv} \
+				-f productive \
+				-u T TRUE True true \
+				-o ${sample_id}_productive.tsv || cp ${airr_tsv} ${sample_id}_productive.tsv
+		fi
+
+		if [[ ! -f "${sample_id}_productive.tsv" ]]; then
+			cp ${airr_tsv} ${sample_id}_productive.tsv
+		fi
+		"""
+
+}
+
+process SUMMARIZE_VDJ {
+
+	container 'immcantation/suite:4.5.0'
+	containerOptions '--platform linux/amd64'
+
+	publishDir "${params.repertoire_results}/reports", mode: 'copy'
+
+	errorStrategy { task.attempt < 3 ? 'retry' : params.errorMode }
+	maxRetries 2
+
+	input:
+	path airr_tsvs
+	path summarize_script
+
+	output:
+	path "vdj_summary.tsv"
+
+	script:
+	"""
+	python3 ${summarize_script} \
+		--inputs ${airr_tsvs} \
+		--output vdj_summary.tsv
+	"""
+
+}
+
+process DEFINE_CLONES {
+
+	container 'immcantation/suite:4.5.0'
+	containerOptions '--platform linux/amd64'
+
+	tag { "${sample_id}" }
+	publishDir "${params.repertoire_results}/clones", mode: 'copy'
+
+	errorStrategy { task.attempt < 3 ? 'retry' : params.errorMode }
+	maxRetries 2
+
+	input:
+	tuple val(sample_id), path(airr_tsv)
+
+	output:
+	path "${sample_id}_clones.tsv"
+
+	script:
+	"""
+	line_count=\$(wc -l < ${airr_tsv})
+	has_junction=\$(head -1 ${airr_tsv} | grep -c "junction" || echo "0")
+
+	if [[ \$line_count -le 1 ]] || [[ \$has_junction -eq 0 ]]; then
+		cp ${airr_tsv} ${sample_id}_clones.tsv
+	else
+		DefineClones.py -d ${airr_tsv} \
+			--act set \
+			--model ham \
+			--norm len \
+			--dist ${params.clone_threshold} \
+			--format airr \
+			-o ${sample_id}_clones.tsv || cp ${airr_tsv} ${sample_id}_clones.tsv
+	fi
+
+	if [[ ! -f "${sample_id}_clones.tsv" ]]; then
+		cp ${airr_tsv} ${sample_id}_clones.tsv
+	fi
+	"""
+
+}
+
+process DIVERSITY_ANALYSIS {
+
+	container 'immcantation/suite:4.5.0'
+	containerOptions '--platform linux/amd64'
+
+	publishDir "${params.repertoire_results}/diversity", mode: 'copy'
+
+	errorStrategy { task.attempt < 3 ? 'retry' : params.errorMode }
+	maxRetries 2
+
+	input:
+	path clone_files
+
+	output:
+	path "plots/*", emit: plots
+	path "stats/*", emit: stats
+
+	script:
+	"""
+	mkdir -p plots stats
+
+	Rscript - <<'RSCRIPT'
+
+	library(alakazam)
+	library(shazam)
+	library(ggplot2)
+	library(dplyr)
+	library(airr)
+
+	files <- list.files(pattern = "_clones.tsv\$", full.names = TRUE)
+
+	if (length(files) == 0) {
+		stop("No clone files found")
+	}
+
+	db_list <- lapply(files, function(f) {
+		df <- read_rearrangement(f)
+		sample_name <- gsub("_clones.tsv", "", basename(f))
+		sample_name <- gsub("_[0-9]+\$", "", sample_name)
+		sample_name <- gsub("_nogroup\$", "", sample_name)
+		df\$sample_id <- sample_name
+		return(df)
+	})
+	db <- bind_rows(db_list)
+
+	# Auto-detect the dominant chain type per barcode and filter out the
+	# minority chain as contamination
+	db <- db %>%
+		mutate(
+			barcode = gsub("_(heavy|light)\$", "", sample_id),
+			chain_type = ifelse(grepl("_heavy\$", sample_id), "heavy",
+						 ifelse(grepl("_light\$", sample_id), "light", "unknown"))
+		)
+
+	chain_counts <- db %>%
+		group_by(barcode, chain_type) %>%
+		summarise(n = n(), .groups = "drop") %>%
+		filter(chain_type != "unknown")
+
+	dominant_chains <- chain_counts %>%
+		group_by(barcode) %>%
+		slice_max(n, n = 1, with_ties = FALSE) %>%
+		select(barcode, dominant_chain = chain_type)
+
+	valid_samples <- dominant_chains %>%
+		mutate(sample_id = paste0(barcode, "_", dominant_chain)) %>%
+		pull(sample_id)
+
+	contamination <- setdiff(unique(db\$sample_id), valid_samples)
+	if (length(contamination) > 0) {
+		message("Auto-detected contamination (minority chain types): ", paste(contamination, collapse = ", "))
+		db <- db %>% filter(sample_id %in% valid_samples)
+	}
+	message("Remaining samples after filtering: ", paste(unique(db\$sample_id), collapse = ", "))
+
+	db <- db %>% select(-barcode, -chain_type)
+
+	has_clone_id <- "clone_id" %in% colnames(db)
+	has_junction_aa <- "junction_aa" %in% colnames(db)
+
+	if (!has_clone_id) {
+		message("Warning: clone_id column not found in data. Clone-based analyses will be skipped.")
+	}
+
+	stats <- db %>%
+		group_by(sample_id) %>%
+		summarise(
+			total_sequences = n(),
+			unique_clones = if (has_clone_id) n_distinct(clone_id, na.rm = TRUE) else NA_integer_,
+			productive = sum(productive == TRUE | productive == "T", na.rm = TRUE),
+			mean_cdr3_length = if (has_junction_aa) mean(nchar(as.character(junction_aa)), na.rm = TRUE) else NA_real_,
+			median_cdr3_length = if (has_junction_aa) median(nchar(as.character(junction_aa)), na.rm = TRUE) else NA_real_
+		)
+	write.csv(stats, "stats/basic_stats.csv", row.names = FALSE)
+
+	if (has_junction_aa) {
+		db\$cdr3_length <- nchar(as.character(db\$junction_aa))
+
+		p1 <- ggplot(db, aes(x = cdr3_length, fill = sample_id)) +
+			geom_histogram(binwidth = 1, position = "dodge", alpha = 0.7) +
+			labs(title = "CDR3 Length Distribution",
+				 x = "CDR3 Length (amino acids)",
+				 y = "Count") +
+			theme_minimal() +
+			theme(legend.position = "bottom")
+		ggsave("plots/cdr3_length_distribution.pdf", p1, width = 10, height = 6)
+		ggsave("plots/cdr3_length_distribution.png", p1, width = 10, height = 6, dpi = 150)
+	} else {
+		message("Skipping CDR3 length distribution due to missing junction_aa column")
+	}
+
+	v_usage <- db %>%
+		filter(!is.na(v_call)) %>%
+		mutate(v_gene = gsub("\\\\*.*", "", v_call)) %>%
+		group_by(sample_id, v_gene) %>%
+		summarise(count = n(), .groups = "drop") %>%
+		group_by(sample_id) %>%
+		mutate(freq = count / sum(count))
+
+	write.csv(v_usage, "stats/v_gene_usage.csv", row.names = FALSE)
+
+	p2 <- ggplot(v_usage, aes(x = reorder(v_gene, -freq), y = freq, fill = sample_id)) +
+		geom_bar(stat = "identity", position = "dodge") +
+		labs(title = "V Gene Usage",
+			 x = "V Gene",
+			 y = "Frequency") +
+		theme_minimal() +
+		theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 6),
+			  legend.position = "bottom")
+	ggsave("plots/v_gene_usage.pdf", p2, width = 14, height = 6)
+	ggsave("plots/v_gene_usage.png", p2, width = 14, height = 6, dpi = 150)
+
+	d_usage <- db %>%
+		filter(grepl("_heavy\$", sample_id)) %>%
+		filter(!is.na(d_call) & d_call != "") %>%
+		mutate(d_gene = gsub("\\\\*.*", "", d_call)) %>%
+		group_by(sample_id, d_gene) %>%
+		summarise(count = n(), .groups = "drop") %>%
+		group_by(sample_id) %>%
+		mutate(freq = count / sum(count))
+
+	if (nrow(d_usage) > 0) {
+		write.csv(d_usage, "stats/d_gene_usage.csv", row.names = FALSE)
+
+		p_d <- ggplot(d_usage, aes(x = reorder(d_gene, -freq), y = freq, fill = sample_id)) +
+			geom_bar(stat = "identity", position = "dodge") +
+			labs(title = "D Gene Usage (Heavy Chain)",
+				 x = "D Gene",
+				 y = "Frequency") +
+			theme_minimal() +
+			theme(axis.text.x = element_text(angle = 45, hjust = 1),
+				  legend.position = "bottom")
+		ggsave("plots/d_gene_usage.pdf", p_d, width = 10, height = 6)
+		ggsave("plots/d_gene_usage.png", p_d, width = 10, height = 6, dpi = 150)
+	} else {
+		message("No D gene calls found (D genes only present in heavy chain)")
+	}
+
+	j_usage <- db %>%
+		filter(!is.na(j_call)) %>%
+		mutate(j_gene = gsub("\\\\*.*", "", j_call)) %>%
+		group_by(sample_id, j_gene) %>%
+		summarise(count = n(), .groups = "drop") %>%
+		group_by(sample_id) %>%
+		mutate(freq = count / sum(count))
+
+	write.csv(j_usage, "stats/j_gene_usage.csv", row.names = FALSE)
+
+	p3 <- ggplot(j_usage, aes(x = reorder(j_gene, -freq), y = freq, fill = sample_id)) +
+		geom_bar(stat = "identity", position = "dodge") +
+		labs(title = "J Gene Usage",
+			 x = "J Gene",
+			 y = "Frequency") +
+		theme_minimal() +
+		theme(axis.text.x = element_text(angle = 45, hjust = 1),
+			  legend.position = "bottom")
+	ggsave("plots/j_gene_usage.pdf", p3, width = 10, height = 6)
+	ggsave("plots/j_gene_usage.png", p3, width = 10, height = 6, dpi = 150)
+
+	if (has_clone_id) {
+		clone_sizes <- db %>%
+			filter(!is.na(clone_id)) %>%
+			group_by(sample_id, clone_id) %>%
+			summarise(clone_size = n(), .groups = "drop")
+
+		write.csv(clone_sizes, "stats/clone_sizes.csv", row.names = FALSE)
+
+		if (nrow(clone_sizes) > 0) {
+			p4 <- ggplot(clone_sizes, aes(x = clone_size, fill = sample_id)) +
+				geom_histogram(binwidth = 1, position = "dodge", alpha = 0.7) +
+				scale_x_log10() +
+				labs(title = "Clone Size Distribution",
+					 x = "Clone Size (log10)",
+					 y = "Count") +
+				theme_minimal() +
+				theme(legend.position = "bottom")
+			ggsave("plots/clone_size_distribution.pdf", p4, width = 10, height = 6)
+			ggsave("plots/clone_size_distribution.png", p4, width = 10, height = 6, dpi = 150)
+		}
+
+		if (nrow(db) > 0 && any(!is.na(db\$clone_id))) {
+
+			div_curve <- tryCatch({
+				alphaDiversity(db, group = "sample_id", clone = "clone_id",
+							  min_q = 0, max_q = 4, step_q = 0.1,
+							  ci = 0.95, nboot = 100)
+			}, error = function(e) {
+				message("Could not calculate diversity curve: ", e\$message)
+				NULL
+			})
+
+			if (!is.null(div_curve)) {
+				p5 <- plot(div_curve, legend_title = "Sample") +
+					labs(title = "Repertoire Diversity (Hill Numbers)") +
+					theme_minimal()
+				ggsave("plots/diversity_curve.pdf", p5, width = 10, height = 6)
+				ggsave("plots/diversity_curve.png", p5, width = 10, height = 6, dpi = 150)
+
+				write.csv(div_curve@diversity, "stats/diversity_values.csv", row.names = FALSE)
+			}
+
+			rarefaction <- tryCatch({
+				estimateAbundance(db, group = "sample_id", clone = "clone_id",
+								ci = 0.95, nboot = 100)
+			}, error = function(e) {
+				message("Could not calculate rarefaction: ", e\$message)
+				NULL
+			})
+
+			if (!is.null(rarefaction)) {
+				tryCatch({
+					p6 <- plot(rarefaction, legend_title = "Sample") +
+						labs(title = "Clonal Abundance Rarefaction") +
+						theme_minimal()
+					ggsave("plots/rarefaction_curve.pdf", p6, width = 10, height = 6)
+					ggsave("plots/rarefaction_curve.png", p6, width = 10, height = 6, dpi = 150)
+				}, error = function(e) {
+					message("Could not plot rarefaction curve: ", e\$message)
+				})
+			}
+		}
+
+		diversity_summary <- db %>%
+			filter(!is.na(clone_id)) %>%
+			group_by(sample_id) %>%
+			summarise(
+				total_sequences = n(),
+				unique_clones = n_distinct(clone_id),
+				simpson_index = 1 - sum((table(clone_id)/n())^2),
+				shannon_index = -sum((table(clone_id)/n()) * log(table(clone_id)/n())),
+				chao1 = n_distinct(clone_id) + (sum(table(clone_id) == 1)^2) / (2 * max(1, sum(table(clone_id) == 2))),
+				.groups = "drop"
+			)
+
+		write.csv(diversity_summary, "stats/diversity_summary.csv", row.names = FALSE)
+	} else {
+		message("Skipping clone-based analyses due to missing clone_id column")
+		write.csv(data.frame(), "stats/clone_sizes.csv", row.names = FALSE)
+		write.csv(data.frame(), "stats/diversity_summary.csv", row.names = FALSE)
+	}
+
+	message("Diversity analysis complete!")
+
+	RSCRIPT
 	"""
 
 }
 
 process GENERATE_REPORT {
 
-	publishDir params.reports, mode: 'copy', overwrite: true
+	container 'immcantation/suite:4.5.0'
+	containerOptions '--platform linux/amd64'
 
-	errorStrategy 'ignore'
-
-	input:
-	path stats
-
-	output:
-	path "*.pdf", optional: true
-	path "report_summary.txt"
-
-	script:
-	"""
-	echo "Bovine IgG Repertoire Analysis Report" > report_summary.txt
-	echo "=====================================" >> report_summary.txt
-	echo "" >> report_summary.txt
-	cat ${stats} >> report_summary.txt
-	echo "" >> report_summary.txt
-	echo "Analysis completed: \$(date)" >> report_summary.txt
-	"""
-
-}
-
-process COLLECT_CONSENSUS_STATS {
-
-	publishDir params.reports, mode: 'copy', overwrite: true
+	publishDir "${params.repertoire_results}", mode: 'copy'
 
 	errorStrategy { task.attempt < 3 ? 'retry' : params.errorMode }
 	maxRetries 2
 
 	input:
-	path consensus_dirs
+	path plots
+	path stats
 
 	output:
-	path "summary_stats.tsv"
+	path "repertoire_report.html"
 
 	script:
 	"""
-	echo -e "barcode\tchain\tnum_consensus_sequences\ttotal_reads" > summary_stats.tsv
+	cat > repertoire_report.html << 'HTML'
+<!DOCTYPE html>
+<html>
+<head>
+	<title>Bovine IgG Repertoire Analysis Report</title>
+	<style>
+		body { font-family: Arial, sans-serif; margin: 40px; }
+		h1 { color: #2c3e50; }
+		h2 { color: #34495e; border-bottom: 2px solid #3498db; padding-bottom: 10px; }
+		.plot-container { margin: 20px 0; text-align: center; }
+		.plot-container img { max-width: 100%; border: 1px solid #ddd; }
+		.section { margin: 30px 0; }
+	</style>
+</head>
+<body>
+	<h1>Bovine IgG Repertoire Analysis Report</h1>
 
-	for dir in */; do
-		# Extract barcode and chain from directory name (format: barcode_chain_consensus)
-		dirname=\$(basename "\$dir" _consensus)
-		barcode=\$(echo "\$dirname" | rev | cut -d'_' -f2- | rev)
-		chain=\$(echo "\$dirname" | rev | cut -d'_' -f1 | rev)
-		if [ -d "\$dir" ]; then
-			# Count consensus sequences
-			num_seqs=\$(find "\$dir" -name "*.fasta" -exec grep -c "^>" {} + 2>/dev/null | awk -F: '{sum+=\$2} END {print sum}' || echo 0)
-			echo -e "\${barcode}\t\${chain}\t\${num_seqs}\tNA" >> summary_stats.tsv
-		fi
-	done
+	<div class="section">
+		<h2>Summary Statistics</h2>
+		<p>See stats/ directory for detailed CSV files.</p>
+	</div>
+
+	<div class="section">
+		<h2>CDR3 Length Distribution</h2>
+		<div class="plot-container">
+			<img src="diversity/plots/cdr3_length_distribution.png" alt="CDR3 Length Distribution">
+		</div>
+	</div>
+
+	<div class="section">
+		<h2>V Gene Usage</h2>
+		<div class="plot-container">
+			<img src="diversity/plots/v_gene_usage.png" alt="V Gene Usage">
+		</div>
+	</div>
+
+	<div class="section">
+		<h2>J Gene Usage</h2>
+		<div class="plot-container">
+			<img src="diversity/plots/j_gene_usage.png" alt="J Gene Usage">
+		</div>
+	</div>
+
+	<div class="section">
+		<h2>Clone Size Distribution</h2>
+		<div class="plot-container">
+			<img src="diversity/plots/clone_size_distribution.png" alt="Clone Size Distribution">
+		</div>
+	</div>
+
+	<div class="section">
+		<h2>Diversity Analysis</h2>
+		<div class="plot-container">
+			<img src="diversity/plots/diversity_curve.png" alt="Diversity Curve">
+		</div>
+		<div class="plot-container">
+			<img src="diversity/plots/rarefaction_curve.png" alt="Rarefaction Curve">
+		</div>
+	</div>
+
+	<div class="section">
+		<h2>Output Files</h2>
+		<ul>
+			<li><strong>igblast/</strong> - Raw IgBLAST output</li>
+			<li><strong>airr/</strong>, <strong>airr_junction_filled/</strong> - AIRR-formatted sequence annotations</li>
+			<li><strong>filtered/</strong> - Productivity-filtered sequences</li>
+			<li><strong>clones/</strong> - Clone assignments</li>
+			<li><strong>reports/vdj_summary.tsv</strong> - Combined V/D/J call summary</li>
+			<li><strong>diversity/stats/</strong> - CSV files with diversity metrics</li>
+			<li><strong>diversity/plots/</strong> - PDF and PNG plots</li>
+		</ul>
+	</div>
+
+</body>
+</html>
+HTML
 	"""
 
 }
