@@ -38,10 +38,13 @@ Sequence all cells in a single undemultiplexed ONT run and demultiplex by the pl
 ```bash
 nextflow run fruggles11/bovine-igg-pipeline-barcoded \
   --pooled_fastq /path/to/your_run.fastq.gz \
-  --keep_primers true
+  --keep_primers true \
+  --germline_dir /path/to/bovine_germline_fastas
 ```
 
 Use `--keep_primers true` to retain the inner gene-specific primer sequences on reads after demultiplexing. Omit it (or set `false`) to have adapter trimming run instead.
+
+`--germline_dir` is required by default, since repertoire analysis (V(D)J annotation, clonal assignment, diversity analysis — see [Setting Up Repertoire Analysis](#setting-up-repertoire-analysis-optional)) runs automatically at the end of the pipeline. Omit it only if you also pass `--skip_annotation true`.
 
 ### ONT barcode mode (original)
 
@@ -49,7 +52,8 @@ Reads already demultiplexed by MinKNOW into barcode directories:
 
 ```bash
 nextflow run fruggles11/bovine-igg-pipeline-barcoded \
-  --fastq_dir /path/to/fastq_pass
+  --fastq_dir /path/to/fastq_pass \
+  --germline_dir /path/to/bovine_germline_fastas
 ```
 
 ## Input Data
