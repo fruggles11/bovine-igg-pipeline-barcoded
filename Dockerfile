@@ -41,19 +41,12 @@ RUN pip install amplicon-sorter || \
     chmod +x /opt/amplicon_sorter/amplicon_sorter.py && \
     ln -s /opt/amplicon_sorter/amplicon_sorter.py /usr/local/bin/amplicon_sorter.py)
 
-# Set up IgBLAST
-RUN mkdir -p /opt/igblast && \
-    cd /opt/igblast && \
-    wget -q https://ftp.ncbi.nih.gov/blast/executables/igblast/release/LATEST/ncbi-igblast-1.22.0-x64-linux.tar.gz && \
-    tar -xzf ncbi-igblast-1.22.0-x64-linux.tar.gz && \
-    rm ncbi-igblast-1.22.0-x64-linux.tar.gz && \
-    ln -s /opt/igblast/ncbi-igblast-1.22.0/bin/* /usr/local/bin/
-
-# Copy IgBLAST internal data
-RUN cp -r /opt/igblast/ncbi-igblast-1.22.0/internal_data /usr/local/share/igblast/ || true
-RUN cp -r /opt/igblast/ncbi-igblast-1.22.0/optional_file /usr/local/share/igblast/ || true
-
-ENV IGDATA=/usr/local/share/igblast
+# IgBLAST is installed via environment.yml (bioconda), not a manually
+# downloaded binary -- NCBI only ships x64 Linux builds, which have to run
+# under Rosetta/QEMU emulation on Apple Silicon and are unreliable there.
+# The bioconda build resolves to a native linux-aarch64 binary instead, and
+# already bundles internal_data/optional_file under its share directory.
+ENV IGDATA=/opt/conda/share/igblast
 
 # Set PATH
 ENV PATH="/opt/conda/bin:${PATH}"

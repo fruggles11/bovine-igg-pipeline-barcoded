@@ -9,6 +9,7 @@ dependencies:
   - bbmap>=39.01
   - blast>=2.14.0
   - csvtk>=0.25.0
+  - igblast=1.22.0
   - pip
   - pip:
     - biopython

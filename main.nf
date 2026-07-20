@@ -429,19 +429,34 @@ process BUILD_IGBLAST_DB {
 	path fastas
 
 	output:
-	path "bovine_ig_db*"
+	path "bovine_ig_db_*"
 
 	script:
 	"""
-	# Combine all germline fastas
-	cat *.fasta > combined_germlines.fasta
+	# IgBLAST requires separate V, D, and J germline databases (not one
+	# combined blob for all three) -- sort each input fasta into the right
+	# segment by the letter preceding its extension or a "_gaps" suffix
+	# (e.g. bovine_IGHV.fasta or Bos_taurus_IgHV_gaps.fasta both end in V).
+	for f in *.fasta; do
+		base="\${f%.fasta}"
+		base="\${base%_gaps}"
+		segment="\${base: -1}"
+		case "\$segment" in
+			V) cat "\$f" >> v_genes.fasta ;;
+			D) cat "\$f" >> d_genes.fasta ;;
+			J) cat "\$f" >> j_genes.fasta ;;
+		esac
+	done
 
-	# Format for IgBLAST (remove gaps, standardize headers)
-	sed 's/\\./-/g' combined_germlines.fasta | \
-	awk '/^>/{print; next}{gsub(/\\./, ""); print}' > bovine_ig_db
-
-	# Build BLAST database
-	makeblastdb -parse_seqids -dbtype nucl -in bovine_ig_db
+	for segment in V D J; do
+		infile=\$(echo "\$segment" | tr 'A-Z' 'a-z')_genes.fasta
+		if [ -s "\$infile" ]; then
+			# Format for IgBLAST (remove gaps, standardize headers)
+			sed 's/\\./-/g' "\$infile" | \
+			awk '/^>/{print; next}{gsub(/\\./, ""); print}' > bovine_ig_db_\${segment}
+			makeblastdb -parse_seqids -dbtype nucl -in bovine_ig_db_\${segment}
+		fi
+	done
 	"""
 
 }
@@ -462,8 +477,10 @@ process ANNOTATE_IGBLAST {
 
 	script:
 	"""
-	# Find consensus fasta files
-	consensus_fasta=\$(find ${consensus_dir} -name "*.fasta" -o -name "*consensus*.fa" | head -1)
+	# Find the definitive consensus fasta (amplicon_sorter's *_consensussequences.fasta).
+	# -L is required because Nextflow stages path inputs as symlinks, which find
+	# won't traverse into as a starting argument without it.
+	consensus_fasta=\$(find -L ${consensus_dir} -name "*_consensussequences.fasta" | head -1)
 
 	if [ -z "\$consensus_fasta" ]; then
 		# If no fasta found, create empty output
@@ -471,9 +488,9 @@ process ANNOTATE_IGBLAST {
 	else
 		# Run IgBLAST with custom bovine database
 		igblastn \
-		-germline_db_V bovine_ig_db \
-		-germline_db_J bovine_ig_db \
-		-germline_db_D bovine_ig_db \
+		-germline_db_V bovine_ig_db_V \
+		-germline_db_J bovine_ig_db_J \
+		-germline_db_D bovine_ig_db_D \
 		-auxiliary_data optional_file/human_gl.aux \
 		-query "\$consensus_fasta" \
 		-outfmt "7 std qseq sseq" \
