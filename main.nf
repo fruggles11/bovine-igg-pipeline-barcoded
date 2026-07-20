@@ -550,7 +550,21 @@ process COLLECT_STATS {
 		chain=\$(echo "\$basename" | rev | cut -d'_' -f1 | rev)
 		if [ -s "\$f" ]; then
 			num_seqs=\$(tail -n +2 "\$f" | wc -l)
-			echo -e "\${barcode}\t\${chain}\t\${num_seqs}\tNA\tNA\tNA" >> summary_stats.tsv
+			# Columns: sequence_id, chain, v_gene, v_identity, d_gene,
+			# d_identity, j_gene, j_identity, cdr3_length
+			stats=\$(tail -n +2 "\$f" | awk -F'\t' '
+				\$3 != "NA" { v[\$3] = 1 }
+				\$7 != "NA" { j[\$7] = 1 }
+				\$9 != "NA" { sum += \$9; n++ }
+				END {
+					if (n > 0) {
+						printf "%d\t%d\t%.1f", length(v), length(j), sum / n
+					} else {
+						printf "%d\t%d\tNA", length(v), length(j)
+					}
+				}
+			')
+			echo -e "\${barcode}\t\${chain}\t\${num_seqs}\t\${stats}" >> summary_stats.tsv
 		fi
 	done
 	"""
