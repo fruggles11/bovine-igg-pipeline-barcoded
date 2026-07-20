@@ -178,6 +178,18 @@ workflow {
 			file( "${projectDir}/bin/summarize_vdj.py" )
 		)
 
+		// Pull out candidate ultra-long CDRH3 clones: CDR3 >= 40 aa, or the
+		// IGHV1-7 + IGHD8-2 + IGHJ2-4 germline combination documented as
+		// bovine's ultra-long "stalk and knob" genetic signature
+		EXTRACT_ULTRALONG_CLONES(
+			SUMMARIZE_VDJ.out,
+			EXTRACT_MAJORITY_CONSENSUS.out
+				.filter { barcode_id, chain, fasta -> fasta.size() > 0 }
+				.map { barcode_id, chain, fasta -> fasta }
+				.collect(),
+			file( "${projectDir}/bin/extract_ultralong_clones.py" )
+		)
+
 		DIVERSITY_ANALYSIS(
 			DEFINE_CLONES.out.collect()
 		)
@@ -813,6 +825,38 @@ process SUMMARIZE_VDJ {
 	python3 ${summarize_script} \
 		--inputs ${airr_tsvs} \
 		--output vdj_summary.tsv
+	"""
+
+}
+
+process EXTRACT_ULTRALONG_CLONES {
+
+	// Plain stdlib Python -- no need for the Immcantation container/emulation
+	publishDir "${params.repertoire_results}/ultralong_cdrh3", mode: 'copy', overwrite: true
+
+	errorStrategy { task.attempt < 3 ? 'retry' : params.errorMode }
+	maxRetries 2
+
+	input:
+	path vdj_summary
+	path majority_fastas
+	path extract_script
+
+	output:
+	path "ultralong_candidates.tsv"
+	path "ultralong_candidates.fasta"
+
+	script:
+	"""
+	python3 ${extract_script} \
+		--vdj_summary ${vdj_summary} \
+		--fasta_dir . \
+		--min_cdr3_aa ${params.min_ultralong_cdr3_aa} \
+		--v_gene ${params.ultralong_v_gene} \
+		--d_gene ${params.ultralong_d_gene} \
+		--j_gene ${params.ultralong_j_gene} \
+		--output_tsv ultralong_candidates.tsv \
+		--output_fasta ultralong_candidates.fasta
 	"""
 
 }
