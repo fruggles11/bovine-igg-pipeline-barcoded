@@ -37,34 +37,36 @@ def parse_igblast_output(igblast_file):
                     current_hits = []
                 continue
 
-            # Parse tabular hit lines
+            # Parse hit table rows. IgBLAST's "-outfmt 7 std qseq sseq" hit
+            # table prepends a chain-type column (V/D/J) ahead of the
+            # documented "Fields:" list, and inserts an extra "gaps" column
+            # between "gap opens" and "q. start" -- so the real layout is:
+            # hit_type, query id, subject id, % identity, alignment length,
+            # mismatches, gap opens, gaps, q.start, q.end, s.start, s.end,
+            # evalue, bit score, query seq, subject seq.
             fields = line.split('\t')
-            if len(fields) >= 12:
+            if len(fields) >= 14:
+                hit_type = fields[0]
                 hit = {
-                    'query_id': fields[0],
-                    'subject_id': fields[1],
-                    'identity': float(fields[2]) if fields[2] else 0,
-                    'alignment_length': int(fields[3]) if fields[3] else 0,
-                    'mismatches': int(fields[4]) if fields[4] else 0,
-                    'gap_opens': int(fields[5]) if fields[5] else 0,
-                    'q_start': int(fields[6]) if fields[6] else 0,
-                    'q_end': int(fields[7]) if fields[7] else 0,
-                    's_start': int(fields[8]) if fields[8] else 0,
-                    's_end': int(fields[9]) if fields[9] else 0,
-                    'evalue': float(fields[10]) if fields[10] else 0,
-                    'bit_score': float(fields[11]) if fields[11] else 0,
+                    'query_id': fields[1],
+                    'subject_id': fields[2],
+                    'identity': float(fields[3]) if fields[3] else 0,
+                    'alignment_length': int(fields[4]) if fields[4] else 0,
+                    'mismatches': int(fields[5]) if fields[5] else 0,
+                    'gap_opens': int(fields[6]) if fields[6] else 0,
+                    'q_start': int(fields[8]) if fields[8] else 0,
+                    'q_end': int(fields[9]) if fields[9] else 0,
+                    's_start': int(fields[10]) if fields[10] else 0,
+                    's_end': int(fields[11]) if fields[11] else 0,
+                    'evalue': float(fields[12]) if fields[12] else 0,
+                    'bit_score': float(fields[13]) if fields[13] else 0,
                 }
 
-                # Extract gene type from subject ID
-                subject = hit['subject_id']
-                if 'IGHV' in subject or 'IGV' in subject:
-                    hit['gene_type'] = 'V'
-                elif 'IGHD' in subject or 'IGD' in subject:
-                    hit['gene_type'] = 'D'
-                elif 'IGHJ' in subject or 'IGJ' in subject or 'IGKJ' in subject or 'IGLJ' in subject:
-                    hit['gene_type'] = 'J'
-                else:
-                    hit['gene_type'] = 'unknown'
+                # IgBLAST's hit table labels each row's chain type directly
+                # (see "# Hit table (the first field indicates the chain
+                # type of the hit)"), which is authoritative -- no need to
+                # guess from the subject id.
+                hit['gene_type'] = hit_type if hit_type in ('V', 'D', 'J') else 'unknown'
 
                 if not current_query:
                     current_query = hit['query_id']
