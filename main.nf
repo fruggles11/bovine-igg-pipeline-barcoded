@@ -107,7 +107,13 @@ workflow {
 		CONVERT_TO_FASTA.out
 	)
 
-	// Stage 5: Annotation (conditional on germline files being available)
+	// Stage 5: Extract majority consensus sequence per barcode/chain (for
+	// easy import into tools like Geneious)
+	EXTRACT_MAJORITY_CONSENSUS(
+		CLUSTER_READS.out
+	)
+
+	// Stage 6: Annotation (conditional on germline files being available)
 	if ( !params.skip_annotation ) {
 		BUILD_IGBLAST_DB(
 			ch_germlines
@@ -122,7 +128,7 @@ workflow {
 			ANNOTATE_IGBLAST.out
 		)
 
-		// Stage 6: Reporting
+		// Stage 7: Reporting
 		// Extract only the annotations.tsv path (third element) before collecting
 		COLLECT_STATS(
 			PARSE_ANNOTATIONS.out.map { barcode_id, chain, annotations_tsv, cdr3_fasta -> annotations_tsv }.collect()
@@ -159,8 +165,9 @@ params.merged_reads   = params.results + "/1_merged_reads"
 params.classified_reads = params.results + "/2_classified_reads"
 params.filtered_reads = params.results + "/3_filtered_reads"
 params.consensus_seqs = params.results + "/4_consensus_sequences"
-params.annotations = params.results + "/5_annotations"
-params.reports = params.results + "/6_reports"
+params.majority_consensus = params.results + "/5_majority_consensus"
+params.annotations = params.results + "/6_annotations"
+params.reports = params.results + "/7_reports"
 // --------------------------------------------------------------- //
 
 
@@ -423,6 +430,62 @@ process CLUSTER_READS {
 	-ldc ${params.length_diff_consensus} \
 	${amb_flag} \
 	-ar -maxr ${params.max_reads} -ra -np ${task.cpus}
+	"""
+
+}
+
+process EXTRACT_MAJORITY_CONSENSUS {
+
+	tag { "${barcode_id}_${chain}" }
+	publishDir "${params.majority_consensus}", mode: 'copy', overwrite: true
+
+	errorStrategy { task.attempt < 3 ? 'retry' : params.errorMode }
+	maxRetries 2
+
+	input:
+	tuple val(barcode_id), val(chain), path(consensus_dir)
+
+	output:
+	tuple val(barcode_id), val(chain), path("${barcode_id}_${chain}_majority.fasta")
+
+	script:
+	"""
+	# Find the top-level *_consensussequences.fasta (exclude group-specific *_N_consensussequences.fasta)
+	consensus_file=\$(find -L ${consensus_dir} -name "*_consensussequences.fasta" \
+		| grep -vE '_[0-9]+_consensussequences\\.fasta\$' | head -1)
+
+	if [ -z "\$consensus_file" ]; then
+		touch ${barcode_id}_${chain}_majority.fasta
+		exit 0
+	fi
+
+	# Read counts are encoded in the header as (N) e.g. >consensus_barcode01_heavy_0_0(581)
+	# Find the header with the highest read count
+	grep "^>" "\$consensus_file" > headers.txt
+	best_header=""
+	best_count=0
+	while IFS= read -r header; do
+		count=\$(echo "\$header" | grep -oE '\\([0-9]+\\)' | tr -d '()')
+		count=\${count:-0}
+		if [ "\$count" -gt "\$best_count" ]; then
+			best_count="\$count"
+			best_header="\$header"
+		fi
+	done < headers.txt
+
+	if [ -z "\$best_header" ]; then
+		touch ${barcode_id}_${chain}_majority.fasta
+		exit 0
+	fi
+
+	# Extract the sequence for that header and write with an informative name
+	awk -v target="\$best_header" \
+		-v new_header=">${barcode_id} chain=${chain} majority_consensus reads=\$best_count" '
+		\$0 == target { found=1; next }
+		/^>/ { if (found) exit }
+		found { seq = seq \$0 }
+		END { if (seq != "") { print new_header; print seq } }
+	' "\$consensus_file" > ${barcode_id}_${chain}_majority.fasta
 	"""
 
 }

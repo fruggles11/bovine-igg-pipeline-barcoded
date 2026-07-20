@@ -146,8 +146,9 @@ results/
 ├── 4_consensus_sequences/
 │   └── PB01_A01/
 │       └── PB01_A01_heavy_consensus/
-├── 5_annotations/           # if --skip_annotation false
-└── 6_reports/
+├── 5_majority_consensus/    # one dominant-cluster FASTA per cell, for e.g. Geneious import
+├── 6_annotations/           # if --skip_annotation false
+└── 7_reports/
     └── summary_stats.tsv
 ```
 
@@ -163,8 +164,9 @@ results/
 │       └── barcode01_unmatched.fastq.gz
 ├── 3_filtered_reads/
 ├── 4_consensus_sequences/
-├── 5_annotations/           # if --skip_annotation false
-└── 6_reports/
+├── 5_majority_consensus/    # one dominant-cluster FASTA per cell, for e.g. Geneious import
+├── 6_annotations/           # if --skip_annotation false
+└── 7_reports/
     └── summary_stats.tsv
 ```
 
