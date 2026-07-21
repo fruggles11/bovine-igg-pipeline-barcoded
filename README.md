@@ -183,6 +183,7 @@ results/
 ├── clones/                   # per-cell clone assignments (Change-O DefineClones.py)
 ├── reports/
 │   └── vdj_summary.tsv       # combined V/D/J calls, one row per cell, with a
+│                              # cdr3_aa column (the CDR3 amino acid sequence) and a
 │                              # junction_source column (igblast vs anchor -- see below)
 ├── diversity/
 │   ├── stats/                # CSV files: basic stats, gene usage, clone sizes, diversity indices
