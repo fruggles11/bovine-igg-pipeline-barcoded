@@ -2,9 +2,14 @@
 """
 Combine per-barcode AIRR TSVs into a single one-row-per-sequence VDJ summary,
 matching the vdj_summary.tsv shape used by bovine-igg-pipeline's SUMMARIZE_VDJ
-(barcode, chain, v_call, d_call, j_call, productive, v_identity, cdr3_aa,
+(barcode, chain, v_call, d_call, j_call, v_identity, cdr3_aa,
 junction_aa_length), plus junction_source to show whether the CDR3 call came
 from IgBLAST directly or the J-anchor fallback.
+
+The AIRR `productive` field is omitted: MakeDb.py derives it from vj_in_frame,
+which needs an IMGT-gapped germline reference to locate frame boundaries. Our
+bovine germlines aren't IMGT-gapped, so vj_in_frame (and productive) come out
+False for nearly every sequence regardless of whether it's actually in-frame.
 """
 
 import argparse
@@ -29,7 +34,7 @@ def main():
     args = parser.parse_args()
 
     cols = ['barcode', 'chain', 'v_call', 'd_call', 'j_call',
-            'productive', 'v_identity', 'cdr3_aa', 'junction_aa_length', 'junction_source']
+            'v_identity', 'cdr3_aa', 'junction_aa_length', 'junction_source']
 
     rows_out = []
     for path in sorted(args.inputs):
@@ -48,7 +53,6 @@ def main():
                     'v_call':             row.get('v_call', '') or 'NA',
                     'd_call':             row.get('d_call', '') or 'NA',
                     'j_call':             row.get('j_call', '') or 'NA',
-                    'productive':         row.get('productive', '') or 'NA',
                     'v_identity':         row.get('v_identity', '') or 'NA',
                     'cdr3_aa':            jaa if jaa else 'NA',
                     'junction_aa_length': str(len(jaa)) if jaa else 'NA',
